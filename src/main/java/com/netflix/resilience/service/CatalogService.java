@@ -71,3 +71,4 @@ public class CatalogService {
         return String.format("[RATE LIMIT FALLBACK] Request rejected by sliding-window rate limiter for '%s'. Please retry after cooling period.", videoId);
     }
 }
+

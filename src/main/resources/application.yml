@@ -3,13 +3,14 @@ server:
 
 spring:
   application:
-    name: netflix-resilience-service
+    name: netflix-resilience-microservice
 
+# Spring Boot Actuator Configuration
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents,ratelimiters,ratelimiterevents
+        include: "*"
   endpoint:
     health:
       show-details: always
@@ -19,27 +20,36 @@ management:
     ratelimiters:
       enabled: true
 
-# Resilience4j Configuration
+# Resilience4j Core Configuration
 resilience4j:
   circuitbreaker:
-    instances:
-      catalogService:
+    configs:
+      default:
         registerHealthIndicator: true
         slidingWindowType: COUNT_BASED
         slidingWindowSize: 10
         minimumNumberOfCalls: 5
         failureRateThreshold: 50.0
+        slowCallDurationThreshold: 1500ms
         slowCallRateThreshold: 50.0
-        slowCallDurationThreshold: 2000ms
-        waitDurationInOpenState: 10000ms
+        waitDurationInOpenState: 5000ms
         permittedNumberOfCallsInHalfOpenState: 3
         automaticTransitionFromOpenToHalfOpenEnabled: true
+        recordExceptions:
+          - java.lang.Throwable
+        ignoreExceptions: []
         eventConsumerBufferSize: 100
-  ratelimiter:
     instances:
-      streamLimiter:
+      streamingServiceCircuitBreaker:
+        baseConfig: default
+  ratelimiter:
+    configs:
+      default:
         registerHealthIndicator: true
-        limitForPeriod: 5
-        limitRefreshPeriod: 10s
-        timeoutDuration: 500ms
-        eventConsumerBufferSize: 50
+        limitForPeriod: 10
+        limitRefreshPeriod: 1s
+        timeoutDuration: 0ms
+        eventConsumerBufferSize: 100
+    instances:
+      clientRateLimiter:
+        baseConfig: default

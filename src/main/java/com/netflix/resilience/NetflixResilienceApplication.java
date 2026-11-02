@@ -10,3 +10,4 @@ public class NetflixResilienceApplication {
         SpringApplication.run(NetflixResilienceApplication.class, args);
     }
 }
+
