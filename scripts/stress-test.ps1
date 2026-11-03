@@ -32,3 +32,4 @@ try {
 } catch {
     Write-Host "Error executing stress test: $_" -ForegroundColor Red
 }
+

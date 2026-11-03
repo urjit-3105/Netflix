@@ -9,3 +9,4 @@ public class DownstreamServiceException extends RuntimeException {
         super(message, cause);
     }
 }
+

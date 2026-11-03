@@ -124,3 +124,4 @@ public class ResilienceConfig {
         return resilienceEventHistory.stream().limit(25).collect(Collectors.toList());
     }
 }
+
