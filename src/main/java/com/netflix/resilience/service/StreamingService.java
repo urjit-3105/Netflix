@@ -3,6 +3,7 @@ package com.netflix.resilience.service;
 import com.netflix.resilience.client.DownstreamStreamingClient;
 import com.netflix.resilience.config.ResilienceConfig;
 import com.netflix.resilience.model.StreamResponse;
+import com.netflix.resilience.service.cache.CatalogCacheService;
 import io.github.resilience4j.bulkhead.Bulkhead;
 import io.github.resilience4j.bulkhead.BulkheadFullException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
@@ -13,8 +14,10 @@ import io.github.resilience4j.ratelimiter.RequestNotPermitted;
 import io.github.resilience4j.retry.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.Optional;
 import java.util.function.Supplier;
 
 @Service
@@ -28,6 +31,7 @@ public class StreamingService {
     private final Bulkhead bulkhead;
     private final Retry retry;
     private final ResilienceConfig resilienceConfig;
+    private final CatalogCacheService catalogCacheService;
 
     public StreamingService(DownstreamStreamingClient downstreamClient,
                             CircuitBreaker streamingServiceCircuitBreaker,
@@ -35,12 +39,24 @@ public class StreamingService {
                             Bulkhead streamingBulkhead,
                             Retry streamingRetry,
                             ResilienceConfig resilienceConfig) {
+        this(downstreamClient, streamingServiceCircuitBreaker, rateLimiterRegistry, streamingBulkhead, streamingRetry, resilienceConfig, null);
+    }
+
+    @Autowired
+    public StreamingService(DownstreamStreamingClient downstreamClient,
+                            CircuitBreaker streamingServiceCircuitBreaker,
+                            RateLimiterRegistry rateLimiterRegistry,
+                            Bulkhead streamingBulkhead,
+                            Retry streamingRetry,
+                            ResilienceConfig resilienceConfig,
+                            @Autowired(required = false) CatalogCacheService catalogCacheService) {
         this.downstreamClient = downstreamClient;
         this.circuitBreaker = streamingServiceCircuitBreaker;
         this.rateLimiterRegistry = rateLimiterRegistry;
         this.bulkhead = streamingBulkhead;
         this.retry = streamingRetry;
         this.resilienceConfig = resilienceConfig;
+        this.catalogCacheService = catalogCacheService;
     }
 
     /**
@@ -84,6 +100,12 @@ public class StreamingService {
         try {
             StreamResponse response = fullyProtectedSupplier.get();
             response.setCircuitState(circuitBreaker.getState().name());
+
+            // Tiered Caching: snapshot valid manifest into Stale Store
+            if (catalogCacheService != null) {
+                catalogCacheService.recordSuccessfulManifest(contentId, response);
+            }
+
             return response;
         } catch (RequestNotPermitted ex) {
             log.warn("[RATE LIMIT EXCEEDED] Client '{}' exceeded maximum allowed request throughput: {}", clientId, ex.getMessage());
@@ -103,13 +125,28 @@ public class StreamingService {
 
     /**
      * Automated fallback for Circuit Breaker tripping or downstream outages.
-     * Degrades quality gracefully to local pre-cached CDN edge buffer (720p HD).
+     * First attempts Stale-While-Revalidate from local cache store to return the 4K manifest;
+     * if cold, gracefully degrades to standard 720p edge buffer.
      */
     public StreamResponse fallbackCircuitBreaker(String contentId,
                                                  String clientId,
                                                  Throwable ex,
                                                  long durationMs,
                                                  boolean circuitOpen) {
+
+        // Check Stale-While-Revalidate cache store first
+        if (catalogCacheService != null) {
+            Optional<StreamResponse> staleFallback = catalogCacheService.getStaleFallback(contentId);
+            if (staleFallback.isPresent()) {
+                StreamResponse stale = staleFallback.get();
+                stale.setClientId(clientId);
+                stale.setCircuitState(circuitBreaker.getState().name());
+                stale.setExecutionDurationMs(durationMs);
+                stale.setTimestamp(System.currentTimeMillis());
+                return stale;
+            }
+        }
+
         String cause = circuitOpen
                 ? "Circuit Breaker OPEN (Fail-Fast Triggered)"
                 : "Downstream Outage (" + ex.getClass().getSimpleName() + " after retries)";
@@ -121,6 +158,7 @@ public class StreamingService {
                 .quality("720p HD (Edge Fallback Buffer)")
                 .bitrate("2.5 Mbps (Optimized)")
                 .status("FALLBACK")
+                .cacheStatus("COLD_FALLBACK")
                 .message("Graceful Degradation Active: Downstream CDN unavailable [" + cause + "]. Serving cached edge stream without disruption.")
                 .circuitState(circuitBreaker.getState().name())
                 .executionDurationMs(durationMs)
@@ -142,6 +180,7 @@ public class StreamingService {
                 .quality("NONE")
                 .bitrate("0 Kbps")
                 .status("THROTTLED")
+                .cacheStatus("NONE")
                 .message("HTTP 429 Too Many Requests: Sliding-window rate limit exceeded for client '" + clientId + "'. Surge protection engaged.")
                 .circuitState(circuitBreaker.getState().name())
                 .executionDurationMs(durationMs)
@@ -163,6 +202,7 @@ public class StreamingService {
                 .quality("NONE")
                 .bitrate("0 Kbps")
                 .status("BULKHEAD_FULL")
+                .cacheStatus("NONE")
                 .message("HTTP 503 Service Unavailable: Bulkhead concurrency capacity saturated for content '" + contentId + "'. System isolated against cascading load.")
                 .circuitState(circuitBreaker.getState().name())
                 .executionDurationMs(durationMs)
@@ -180,5 +220,9 @@ public class StreamingService {
 
     public Retry getRetry() {
         return retry;
+    }
+
+    public CatalogCacheService getCatalogCacheService() {
+        return catalogCacheService;
     }
 }

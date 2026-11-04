@@ -4,11 +4,13 @@ import com.netflix.resilience.config.ResilienceConfig;
 import com.netflix.resilience.model.HealthStatusResponse;
 import com.netflix.resilience.model.StreamResponse;
 import com.netflix.resilience.service.StreamingService;
+import com.netflix.resilience.service.cache.CatalogCacheService;
 import io.github.resilience4j.bulkhead.Bulkhead;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
 import io.github.resilience4j.retry.Retry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -27,6 +29,7 @@ public class ResilienceController {
     private final Bulkhead bulkhead;
     private final Retry retry;
     private final ResilienceConfig resilienceConfig;
+    private final CatalogCacheService catalogCacheService;
 
     public ResilienceController(StreamingService streamingService,
                                 CircuitBreaker streamingServiceCircuitBreaker,
@@ -34,12 +37,24 @@ public class ResilienceController {
                                 Bulkhead streamingBulkhead,
                                 Retry streamingRetry,
                                 ResilienceConfig resilienceConfig) {
+        this(streamingService, streamingServiceCircuitBreaker, rateLimiterRegistry, streamingBulkhead, streamingRetry, resilienceConfig, null);
+    }
+
+    @Autowired
+    public ResilienceController(StreamingService streamingService,
+                                CircuitBreaker streamingServiceCircuitBreaker,
+                                RateLimiterRegistry rateLimiterRegistry,
+                                Bulkhead streamingBulkhead,
+                                Retry streamingRetry,
+                                ResilienceConfig resilienceConfig,
+                                @Autowired(required = false) CatalogCacheService catalogCacheService) {
         this.streamingService = streamingService;
         this.circuitBreaker = streamingServiceCircuitBreaker;
         this.rateLimiterRegistry = rateLimiterRegistry;
         this.bulkhead = streamingBulkhead;
         this.retry = streamingRetry;
         this.resilienceConfig = resilienceConfig;
+        this.catalogCacheService = catalogCacheService;
     }
 
     /**
@@ -61,11 +76,21 @@ public class ResilienceController {
         if ("BULKHEAD_FULL".equals(response.getStatus())) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
         }
+        if ("STALE_FALLBACK".equals(response.getStatus())) {
+            return ResponseEntity.ok()
+                    .header("X-Cache-Degraded", "STALE_FALLBACK")
+                    .body(response);
+        }
+        if ("FALLBACK".equals(response.getStatus())) {
+            return ResponseEntity.ok()
+                    .header("X-Cache-Degraded", "COLD_FALLBACK")
+                    .body(response);
+        }
         return ResponseEntity.ok(response);
     }
 
     /**
-     * Health Status & Telemetry Endpoint exposing live metrics across CircuitBreaker, RateLimiter, Bulkhead, and Retry.
+     * Health Status & Telemetry Endpoint exposing live metrics across CircuitBreaker, RateLimiter, Bulkhead, Retry, and Cache.
      */
     @GetMapping("/health-status")
     public ResponseEntity<HealthStatusResponse> getHealthStatus(
@@ -109,8 +134,16 @@ public class ResilienceController {
         retryMetrics.put("failedCallsWithoutRetry", retry.getMetrics().getNumberOfFailedCallsWithoutRetryAttempt());
         retryMetrics.put("failedCallsWithRetry", retry.getMetrics().getNumberOfFailedCallsWithRetryAttempt());
 
+        Map<String, Object> cacheMetrics = new LinkedHashMap<>();
+        if (catalogCacheService != null) {
+            cacheMetrics.put("staleStoreSize", catalogCacheService.getStaleStoreSize());
+            cacheMetrics.put("tier", "L1 Caffeine + Stale-While-Revalidate Fallback");
+        } else {
+            cacheMetrics.put("status", "Disabled / NotConfigured");
+        }
+
         String overallHealth = circuitBreaker.getState() == CircuitBreaker.State.OPEN
-                ? "DEGRADED (Circuit Breaker OPEN - Serving Cached Fallbacks)"
+                ? "DEGRADED (Circuit Breaker OPEN - Serving Stale/Cached Fallbacks)"
                 : "HEALTHY (Streaming Service UP - Holy Trinity Active)";
 
         HealthStatusResponse healthStatus = HealthStatusResponse.builder()
@@ -120,6 +153,7 @@ public class ResilienceController {
                 .rateLimiter(rlMetrics)
                 .bulkhead(bhMetrics)
                 .retry(retryMetrics)
+                .cache(cacheMetrics)
                 .recentResilienceEvents(resilienceConfig.getRecentResilienceEvents())
                 .timestamp(System.currentTimeMillis())
                 .build();
@@ -144,6 +178,7 @@ public class ResilienceController {
         AtomicInteger fallbackCount = new AtomicInteger();
         AtomicInteger throttledCount = new AtomicInteger();
         AtomicInteger bulkheadCount = new AtomicInteger();
+        AtomicInteger staleCount = new AtomicInteger();
         List<String> logs = new CopyOnWriteArrayList<>();
 
         long start = System.currentTimeMillis();
@@ -165,6 +200,7 @@ public class ResilienceController {
                         case "OK" -> successCount.incrementAndGet();
                         case "THROTTLED" -> throttledCount.incrementAndGet();
                         case "BULKHEAD_FULL" -> bulkheadCount.incrementAndGet();
+                        case "STALE_FALLBACK" -> staleCount.incrementAndGet();
                         default -> fallbackCount.incrementAndGet();
                     }
                     logs.add(String.format("Req #%02d -> Status: %s | Quality: %s | Circuit: %s",
@@ -187,6 +223,7 @@ public class ResilienceController {
         summary.put("concurrencyLevel", concurrency);
         summary.put("simulatedFailureRate", failPercentage + "%");
         summary.put("successfulResponses", successCount.get());
+        summary.put("staleFallbackResponses", staleCount.get());
         summary.put("circuitBreakerFallbacks", fallbackCount.get());
         summary.put("rateLimitedThrottled", throttledCount.get());
         summary.put("bulkheadSaturated", bulkheadCount.get());

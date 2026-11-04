@@ -9,6 +9,7 @@ public class StreamResponse {
     private String status;
     private String message;
     private String circuitState;
+    private String cacheStatus;
     private long executionDurationMs;
     private long timestamp;
 
@@ -16,7 +17,7 @@ public class StreamResponse {
 
     public StreamResponse(String contentId, String clientId, String title, String quality,
                           String bitrate, String status, String message, String circuitState,
-                          long executionDurationMs, long timestamp) {
+                          String cacheStatus, long executionDurationMs, long timestamp) {
         this.contentId = contentId;
         this.clientId = clientId;
         this.title = title;
@@ -25,6 +26,7 @@ public class StreamResponse {
         this.status = status;
         this.message = message;
         this.circuitState = circuitState;
+        this.cacheStatus = cacheStatus;
         this.executionDurationMs = executionDurationMs;
         this.timestamp = timestamp;
     }
@@ -42,6 +44,7 @@ public class StreamResponse {
         private String status;
         private String message;
         private String circuitState;
+        private String cacheStatus = "NONE";
         private long executionDurationMs;
         private long timestamp;
 
@@ -53,11 +56,13 @@ public class StreamResponse {
         public Builder status(String status) { this.status = status; return this; }
         public Builder message(String message) { this.message = message; return this; }
         public Builder circuitState(String circuitState) { this.circuitState = circuitState; return this; }
+        public Builder cacheStatus(String cacheStatus) { this.cacheStatus = cacheStatus; return this; }
         public Builder executionDurationMs(long executionDurationMs) { this.executionDurationMs = executionDurationMs; return this; }
         public Builder timestamp(long timestamp) { this.timestamp = timestamp; return this; }
 
         public StreamResponse build() {
-            return new StreamResponse(contentId, clientId, title, quality, bitrate, status, message, circuitState, executionDurationMs, timestamp);
+            return new StreamResponse(contentId, clientId, title, quality, bitrate, status, message,
+                    circuitState, cacheStatus, executionDurationMs, timestamp);
         }
     }
 
@@ -77,6 +82,8 @@ public class StreamResponse {
     public void setMessage(String message) { this.message = message; }
     public String getCircuitState() { return circuitState; }
     public void setCircuitState(String circuitState) { this.circuitState = circuitState; }
+    public String getCacheStatus() { return cacheStatus; }
+    public void setCacheStatus(String cacheStatus) { this.cacheStatus = cacheStatus; }
     public long getExecutionDurationMs() { return executionDurationMs; }
     public void setExecutionDurationMs(long executionDurationMs) { this.executionDurationMs = executionDurationMs; }
     public long getTimestamp() { return timestamp; }

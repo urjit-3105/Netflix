@@ -10,6 +10,7 @@ public class HealthStatusResponse {
     private Map<String, Object> rateLimiter;
     private Map<String, Object> bulkhead;
     private Map<String, Object> retry;
+    private Map<String, Object> cache;
     private List<String> recentResilienceEvents;
     private long timestamp;
 
@@ -20,6 +21,7 @@ public class HealthStatusResponse {
                                 Map<String, Object> rateLimiter,
                                 Map<String, Object> bulkhead,
                                 Map<String, Object> retry,
+                                Map<String, Object> cache,
                                 List<String> recentResilienceEvents,
                                 long timestamp) {
         this.serviceName = serviceName;
@@ -28,6 +30,7 @@ public class HealthStatusResponse {
         this.rateLimiter = rateLimiter;
         this.bulkhead = bulkhead;
         this.retry = retry;
+        this.cache = cache;
         this.recentResilienceEvents = recentResilienceEvents;
         this.timestamp = timestamp;
     }
@@ -43,6 +46,7 @@ public class HealthStatusResponse {
         private Map<String, Object> rateLimiter;
         private Map<String, Object> bulkhead;
         private Map<String, Object> retry;
+        private Map<String, Object> cache;
         private List<String> recentResilienceEvents;
         private long timestamp;
 
@@ -52,11 +56,13 @@ public class HealthStatusResponse {
         public Builder rateLimiter(Map<String, Object> rateLimiter) { this.rateLimiter = rateLimiter; return this; }
         public Builder bulkhead(Map<String, Object> bulkhead) { this.bulkhead = bulkhead; return this; }
         public Builder retry(Map<String, Object> retry) { this.retry = retry; return this; }
+        public Builder cache(Map<String, Object> cache) { this.cache = cache; return this; }
         public Builder recentResilienceEvents(List<String> recentResilienceEvents) { this.recentResilienceEvents = recentResilienceEvents; return this; }
         public Builder timestamp(long timestamp) { this.timestamp = timestamp; return this; }
 
         public HealthStatusResponse build() {
-            return new HealthStatusResponse(serviceName, overallHealth, circuitBreaker, rateLimiter, bulkhead, retry, recentResilienceEvents, timestamp);
+            return new HealthStatusResponse(serviceName, overallHealth, circuitBreaker, rateLimiter,
+                    bulkhead, retry, cache, recentResilienceEvents, timestamp);
         }
     }
 
@@ -72,6 +78,8 @@ public class HealthStatusResponse {
     public void setBulkhead(Map<String, Object> bulkhead) { this.bulkhead = bulkhead; }
     public Map<String, Object> getRetry() { return retry; }
     public void setRetry(Map<String, Object> retry) { this.retry = retry; }
+    public Map<String, Object> getCache() { return cache; }
+    public void setCache(Map<String, Object> cache) { this.cache = cache; }
     public List<String> getRecentResilienceEvents() { return recentResilienceEvents; }
     public void setRecentResilienceEvents(List<String> recentResilienceEvents) { this.recentResilienceEvents = recentResilienceEvents; }
     public long getTimestamp() { return timestamp; }

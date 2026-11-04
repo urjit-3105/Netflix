@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Netflix Resilience Microservice | Live Chaos & Telemetry Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #0f0f11;
+            --bg-surface: #18181c;
+            --bg-card: #202026;
+            --border-color: #2e2e38;
+            --netflix-red: #E50914;
+            --netflix-red-hover: #b20710;
+            --text-primary: #f5f5f7;
+            --text-secondary: #9e9ea7;
+            --text-muted: #62626e;
+            --status-closed: #22c55e;
+            --status-open: #ef4444;
+            --status-half-open: #f59e0b;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            line-height: 1.5;
+            min-height: 100vh;
+            padding-bottom: 3rem;
+        }
+
+        header {
+            background-color: rgba(24, 24, 28, 0.9);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            padding: 1rem 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .netflix-logo {
+            font-size: 1.6rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            color: var(--netflix-red);
+            text-transform: uppercase;
+        }
+
+        .app-badge {
+            background: rgba(229, 9, 20, 0.15);
+            border: 1px solid rgba(229, 9, 20, 0.3);
+            color: #ff6b72;
+            padding: 0.25rem 0.6rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .header-meta {
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+        }
+
+        .live-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.825rem;
+            color: var(--status-closed);
+            font-weight: 500;
+        }
+
+        .pulsing-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--status-closed);
+            box-shadow: 0 0 8px var(--status-closed);
+            animation: pulse 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.85); }
+        }
+
+        .container {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* Top Hero Status Banner */
+        .system-banner {
+            background: linear-gradient(135deg, rgba(32, 32, 38, 0.8) 0%, rgba(24, 24, 28, 0.95) 100%);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        }
+
+        .system-banner-info h2 {
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+
+        .system-banner-info p {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .state-badge {
+            font-size: 1.1rem;
+            font-weight: 700;
+            padding: 0.5rem 1.25rem;
+            border-radius: 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            letter-spacing: 0.5px;
+            transition: all 0.3s ease;
+        }
+
+        .state-badge.CLOSED {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--status-closed);
+            border: 1px solid rgba(34, 197, 94, 0.4);
+            box-shadow: 0 0 15px rgba(34, 197, 94, 0.2);
+        }
+
+        .state-badge.OPEN {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--status-open);
+            border: 1px solid rgba(239, 68, 68, 0.6);
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
+            animation: pulse-danger 1s infinite alternate;
+        }
+
+        .state-badge.HALF_OPEN {
+            background: rgba(245, 158, 11, 0.2);
+            color: var(--status-half-open);
+            border: 1px solid rgba(245, 158, 11, 0.5);
+            box-shadow: 0 0 15px rgba(245, 158, 11, 0.3);
+        }
+
+        @keyframes pulse-danger {
+            from { box-shadow: 0 0 10px rgba(239, 68, 68, 0.3); }
+            to { box-shadow: 0 0 25px rgba(239, 68, 68, 0.8); }
+        }
+
+        /* Metric Grid */
+        .grid-4 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 1024px) {
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.25);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .card-icon {
+            font-size: 1.25rem;
+        }
+
+        .metric-big {
+            font-size: 2rem;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-primary);
+        }
+
+        .progress-bar-bg {
+            background-color: var(--bg-card);
+            border-radius: 9999px;
+            height: 8px;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            border-radius: 9999px;
+            background-color: var(--status-closed);
+            transition: width 0.4s ease, background-color 0.4s ease;
+        }
+
+        .metric-sub {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Chaos Monkey Section */
+        .chaos-panel {
+            background: linear-gradient(145deg, #1d1820 0%, #17151a 100%);
+            border: 1px solid #4a2835;
+            position: relative;
+        }
+
+        .chaos-badge {
+            background: rgba(229, 9, 20, 0.2);
+            color: #ff6b72;
+            border: 1px solid rgba(229, 9, 20, 0.4);
+            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .control-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .range-slider {
+            width: 100%;
+            accent-color: var(--netflix-red);
+            height: 6px;
+            border-radius: 3px;
+            background: var(--bg-card);
+            cursor: pointer;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 0.6rem 1.1rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-danger {
+            background-color: var(--netflix-red);
+            color: #ffffff;
+        }
+        .btn-danger:hover {
+            background-color: var(--netflix-red-hover);
+            transform: translateY(-1px);
+        }
+
+        .btn-warning {
+            background-color: #d97706;
+            color: #ffffff;
+        }
+        .btn-warning:hover {
+            background-color: #b45309;
+            transform: translateY(-1px);
+        }
+
+        .btn-outline {
+            background-color: transparent;
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+        .btn-outline:hover {
+            background-color: var(--bg-card);
+            border-color: var(--text-muted);
+        }
+
+        .btn-primary {
+            background-color: var(--accent-blue);
+            color: #ffffff;
+        }
+        .btn-primary:hover {
+            background-color: #2563eb;
+            transform: translateY(-1px);
+        }
+
+        /* Stream Playback Simulator */
+        .playback-card {
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border-color);
+        }
+
+        .form-row {
+            display: flex;
+            gap: 1rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .form-control {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            flex: 1;
+            min-width: 180px;
+        }
+
+        .form-control label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .form-control input, .form-control select {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0.55rem 0.85rem;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+
+        .form-control input:focus {
+            outline: none;
+            border-color: var(--netflix-red);
+        }
+
+        /* Terminal Console */
+        .console-card {
+            background-color: #121215;
+            border: 1px solid #23232b;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .console-screen {
+            background-color: #0b0b0d;
+            border: 1px solid #1a1a20;
+            border-radius: 8px;
+            padding: 1rem;
+            height: 240px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            font-size: 0.8rem;
+        }
+
+        .log-line {
+            line-height: 1.4;
+        }
+        .log-time { color: var(--text-muted); }
+        .log-info { color: #60a5fa; }
+        .log-warn { color: #f59e0b; }
+        .log-err { color: #ef4444; }
+        .log-ok { color: #22c55e; }
+
+        /* JSON Response Box */
+        .json-preview {
+            background-color: #0d0d10;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            max-height: 180px;
+            overflow-y: auto;
+            color: #a5b4fc;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="brand-container">
+            <div class="netflix-logo">Netflix</div>
+            <span class="app-badge">Resilience Core 2.0</span>
+        </div>
+        <div class="header-meta">
+            <div class="live-indicator">
+                <span class="pulsing-dot"></span>
+                <span>TELEMETRY STREAM ACTIVE (1000ms)</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+
+        <!-- Top Cluster Status Banner -->
+        <div class="system-banner">
+            <div class="system-banner-info">
+                <h2>Netflix Distributed Resilience Engine</h2>
+                <p id="overall-health-text">Streaming Service UP & Healthy • Active Protection Layer: Holy Trinity (Circuit Breaker, Rate Limiter, Bulkhead, Retry)</p>
+            </div>
+            <div id="circuit-state-badge" class="state-badge CLOSED">
+                <span id="badge-icon">●</span>
+                <span id="badge-text">CIRCUIT CLOSED</span>
+            </div>
+        </div>
+
+        <!-- 4-Card Resilience Metrics Grid -->
+        <div class="grid-4">
+            <!-- 1. Circuit Breaker -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Circuit Breaker</span>
+                    <span class="card-icon">⚡</span>
+                </div>
+                <div class="metric-big" id="cb-failure-rate">0.0%</div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" id="cb-progress-bar" style="width: 0%;"></div>
+                </div>
+                <div class="metric-sub">
+                    <span>Threshold: <strong id="cb-threshold">50%</strong></span>
+                    <span>Buffered: <strong id="cb-buffered">0/10</strong></span>
+                </div>
+                <div class="metric-sub">
+                    <span>Success: <strong id="cb-success" style="color: var(--status-closed)">0</strong></span>
+                    <span>Failed: <strong id="cb-failed" style="color: var(--status-open)">0</strong></span>
+                </div>
+            </div>
+
+            <!-- 2. Sliding Window Rate Limiter -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Rate Limiter</span>
+                    <span class="card-icon">⏱️</span>
+                </div>
+                <div class="metric-big" id="rl-available">10 / 10</div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" id="rl-progress-bar" style="width: 100%;"></div>
+                </div>
+                <div class="metric-sub">
+                    <span>Window: <strong>1.0s</strong></span>
+                    <span>Limit: <strong>10 req/s</strong></span>
+                </div>
+                <div class="metric-sub">
+                    <span>Waiting Threads: <strong id="rl-waiting">0</strong></span>
+                    <span>State: <strong style="color: var(--status-closed)">NOMINAL</strong></span>
+                </div>
+            </div>
+
+            <!-- 3. Bulkhead Concurrency -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Bulkhead Isolation</span>
+                    <span class="card-icon">🛡️</span>
+                </div>
+                <div class="metric-big" id="bh-available">10 Slots</div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" id="bh-progress-bar" style="width: 100%;"></div>
+                </div>
+                <div class="metric-sub">
+                    <span>Max Capacity: <strong>10 Concurrent</strong></span>
+                    <span>Isolation: <strong>Thread Pool</strong></span>
+                </div>
+                <div class="metric-sub">
+                    <span>Status: <strong style="color: var(--status-closed)">ACTIVE</strong></span>
+                    <span>Rejected: <strong id="cb-rejected">0</strong></span>
+                </div>
+            </div>
+
+            <!-- 4. Tiered Stale Caching & Retry -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Tiered Cache & Retry</span>
+                    <span class="card-icon">💾</span>
+                </div>
+                <div class="metric-big" id="cache-stale-count">0 Titles</div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" style="width: 100%; background-color: var(--accent-purple);"></div>
+                </div>
+                <div class="metric-sub">
+                    <span>Strategy: <strong>Stale-While-Reval</strong></span>
+                    <span>Max Retries: <strong>3 attempts</strong></span>
+                </div>
+                <div class="metric-sub">
+                    <span>Retried Calls: <strong id="retry-count">0</strong></span>
+                    <span>Tier: <strong>L1 Caffeine</strong></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2-Column: Interactive Chaos Monkey & Stress Test Runner -->
+        <div class="grid-2">
+            <!-- Left: Chaos Monkey Control Center -->
+            <div class="card chaos-panel">
+                <div class="card-header">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span class="card-title" style="color: #ff6b72;">Chaos Monkey Control Plane</span>
+                        <span class="chaos-badge" id="chaos-active-badge">INACTIVE</span>
+                    </div>
+                    <span class="card-icon">🐒</span>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary);">
+                    Simulate real-world CDN packet drop, transcode timeouts, and regional cloud partitions to test system resilience.
+                </p>
+
+                <!-- Failure Rate Slider -->
+                <div class="control-group">
+                    <div class="control-label">
+                        <span>Simulated 503 Failure Rate</span>
+                        <strong id="label-chaos-failure" style="color: #ff6b72; font-family: 'JetBrains Mono', monospace;">0%</strong>
+                    </div>
+                    <input type="range" class="range-slider" id="input-chaos-failure" min="0" max="100" value="0">
+                </div>
+
+                <!-- Latency Slider -->
+                <div class="control-group">
+                    <div class="control-label">
+                        <span>Artificial Latency Delay (ms)</span>
+                        <strong id="label-chaos-latency" style="color: #f59e0b; font-family: 'JetBrains Mono', monospace;">0 ms</strong>
+                    </div>
+                    <input type="range" class="range-slider" id="input-chaos-latency" min="0" max="3000" step="100" value="0">
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="btn-group" style="margin-top: 0.5rem;">
+                    <button class="btn btn-danger" onclick="injectPartition(true)">
+                        ⚡ 100% Network Partition
+                    </button>
+                    <button class="btn btn-warning" onclick="setQuickChaos(60, 500)">
+                        🔥 60% Error Spike
+                    </button>
+                    <button class="btn btn-outline" onclick="resetChaos()">
+                        ✨ Reset Pristine
+                    </button>
+                </div>
+            </div>
+
+            <!-- Right: Live Stress Test Dispatcher -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Concurrent Load Dispatcher</span>
+                    <span class="card-icon">🚀</span>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary);">
+                    Fire rapid parallel requests through the resilience pipeline to verify sliding-window rate limiting, bulkhead capacity, and circuit breaker trip mechanics.
+                </p>
+
+                <div class="form-row">
+                    <div class="form-control">
+                        <label>Total Requests</label>
+                        <input type="number" id="stress-total" value="25" min="5" max="100">
+                    </div>
+                    <div class="form-control">
+                        <label>Concurrency Slots</label>
+                        <input type="number" id="stress-concurrency" value="10" min="1" max="25">
+                    </div>
+                    <div class="form-control">
+                        <label>Simulated Downstream Error %</label>
+                        <input type="number" id="stress-fail-rate" value="60" min="0" max="100">
+                    </div>
+                </div>
+
+                <div class="btn-group" style="margin-top: 0.5rem;">
+                    <button class="btn btn-primary" id="btn-run-stress" onclick="runStressTest()">
+                        🚀 Dispatch Concurrent Load
+                    </button>
+                </div>
+
+                <div id="stress-results-box" style="display: none; font-size: 0.825rem; background: var(--bg-card); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 0.25rem;">
+                        <span>Load Test Summary:</span>
+                        <span id="stress-duration" style="color: var(--accent-blue)"></span>
+                    </div>
+                    <div id="stress-metrics-pills" style="display: flex; gap: 0.5rem; flex-wrap: wrap;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2-Column: Live Playback Simulator & Event Stream Console -->
+        <div class="grid-2">
+            <!-- Left: Playback Simulator -->
+            <div class="card playback-card">
+                <div class="card-header">
+                    <span class="card-title">Live 4K Stream Request Inspector</span>
+                    <span class="card-icon">🎬</span>
+                </div>
+                <div class="form-row">
+                    <div class="form-control">
+                        <label>Content Identifier</label>
+                        <input type="text" id="stream-content-id" value="stranger-things-s5">
+                    </div>
+                    <div class="form-control">
+                        <label>Subscriber / Client ID</label>
+                        <input type="text" id="stream-client-id" value="subscriber-alpha">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem; height: 38px;">
+                        <input type="checkbox" id="stream-force-fail" style="width: 18px; height: 18px; cursor: pointer;">
+                        <label for="stream-force-fail" style="font-size: 0.85rem; cursor: pointer;">Force Fail</label>
+                    </div>
+                    <button class="btn btn-primary" onclick="requestStreamChunk()">
+                        ▶️ Request Manifest
+                    </button>
+                </div>
+
+                <div class="json-preview" id="stream-response-json">
+                    // Click "Request Manifest" to inspect live streaming response...
+                </div>
+            </div>
+
+            <!-- Right: Real-time Event Stream Console -->
+            <div class="card console-card">
+                <div class="card-header">
+                    <span class="card-title" style="color: #60a5fa;">Resilience Event Stream (Telemetry Log)</span>
+                    <button class="btn btn-outline" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="clearConsole()">Clear</button>
+                </div>
+                <div class="console-screen" id="console-screen">
+                    <div class="log-line"><span class="log-time">[BOOT]</span> <span class="log-ok">Resilience Telemetry Dashboard Connected to Spring Boot 3 Engine.</span></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const API_HEALTH = '/api/v1/content/health-status';
+        const API_CHAOS_STATUS = '/api/v1/chaos/status';
+        const API_CHAOS_CONFIG = '/api/v1/chaos/configure';
+        const API_CHAOS_RESET = '/api/v1/chaos/reset';
+        const API_CHAOS_PARTITION = '/api/v1/chaos/partition';
+        const API_STREAM = '/api/v1/content/stream';
+        const API_STRESS = '/api/v1/content/simulate-load';
+
+        let lastCircuitState = "CLOSED";
+        let lastFailureRate = "0.0%";
+
+        // Telemetry Poller
+        async function pollTelemetry() {
+            try {
+                const [healthRes, chaosRes] = await Promise.all([
+                    fetch(API_HEALTH).then(r => r.json()),
+                    fetch(API_CHAOS_STATUS).then(r => r.json())
+                ]);
+
+                updateHealthUI(healthRes);
+                updateChaosUI(chaosRes);
+            } catch (err) {
+                console.error("Telemetry poll failed:", err);
+            }
+        }
+
+        function updateHealthUI(data) {
+            const cb = data.circuitBreaker;
+            const rl = data.rateLimiter;
+            const bh = data.bulkhead;
+            const retry = data.retry;
+            const cache = data.cache;
+
+            // System Banner & Badge
+            const badge = document.getElementById('circuit-state-badge');
+            const badgeText = document.getElementById('badge-text');
+            const healthText = document.getElementById('overall-health-text');
+
+            badge.className = `state-badge ${cb.state}`;
+            badgeText.innerText = `CIRCUIT ${cb.state}`;
+            healthText.innerText = data.overallHealth;
+
+            // State change logger
+            if (cb.state !== lastCircuitState) {
+                appendLog(`[CIRCUIT STATE TRANSITION] ${lastCircuitState} ➔ ${cb.state}`,
+                    cb.state === 'OPEN' ? 'log-err' : (cb.state === 'HALF_OPEN' ? 'log-warn' : 'log-ok'));
+                lastCircuitState = cb.state;
+            }
+
+            // Circuit Breaker Metrics
+            document.getElementById('cb-failure-rate').innerText = cb.currentFailureRate;
+            document.getElementById('cb-threshold').innerText = cb.failureRateThreshold;
+            document.getElementById('cb-buffered').innerText = `${cb.bufferedCalls}/10`;
+            document.getElementById('cb-success').innerText = cb.successfulCalls;
+            document.getElementById('cb-failed').innerText = cb.failedCalls;
+            document.getElementById('cb-rejected').innerText = cb.notPermittedCalls;
+
+            const rateNum = parseFloat(cb.currentFailureRate) || 0;
+            const progressBar = document.getElementById('cb-progress-bar');
+            progressBar.style.width = `${Math.min(100, rateNum)}%`;
+            progressBar.style.backgroundColor = rateNum >= 50 ? 'var(--status-open)' : (rateNum > 20 ? 'var(--status-half-open)' : 'var(--status-closed)');
+
+            // Rate Limiter
+            document.getElementById('rl-available').innerText = `${rl.availablePermissions} / ${rl.limitForPeriod}`;
+            document.getElementById('rl-waiting').innerText = rl.numberOfWaitingThreads;
+            const rlPercent = (rl.availablePermissions / rl.limitForPeriod) * 100;
+            const rlBar = document.getElementById('rl-progress-bar');
+            rlBar.style.width = `${rlPercent}%`;
+            rlBar.style.backgroundColor = rlPercent < 30 ? 'var(--status-open)' : 'var(--status-closed)';
+
+            // Bulkhead
+            document.getElementById('bh-available').innerText = `${bh.availableConcurrentCalls} / ${bh.maxConcurrentCalls} Slots`;
+            const bhPercent = (bh.availableConcurrentCalls / bh.maxConcurrentCalls) * 100;
+            document.getElementById('bh-progress-bar').style.width = `${bhPercent}%`;
+
+            // Cache & Retry
+            if (cache && cache.staleStoreSize !== undefined) {
+                document.getElementById('cache-stale-count').innerText = `${cache.staleStoreSize} Titles`;
+            }
+            if (retry) {
+                document.getElementById('retry-count').innerText = `${retry.successfulCallsWithRetry + retry.failedCallsWithRetry}`;
+            }
+
+            // Append Actuator Resilience Events if any new
+            if (data.recentResilienceEvents && data.recentResilienceEvents.length > 0) {
+                // Keep UI updated
+            }
+        }
+
+        function updateChaosUI(data) {
+            const badge = document.getElementById('chaos-active-badge');
+            if (data.enabled) {
+                badge.className = 'chaos-badge';
+                badge.style.background = 'rgba(239, 68, 68, 0.3)';
+                badge.style.color = '#ef4444';
+                badge.innerText = data.downstreamPartition ? 'PARTITION OUTAGE ACTIVE' : 'CHAOS ACTIVE';
+            } else {
+                badge.className = 'chaos-badge';
+                badge.style.background = 'rgba(255, 255, 255, 0.05)';
+                badge.style.color = 'var(--text-muted)';
+                badge.innerText = 'INACTIVE';
+            }
+        }
+
+        // Chaos Sliders Listeners
+        const failureSlider = document.getElementById('input-chaos-failure');
+        const latencySlider = document.getElementById('input-chaos-latency');
+
+        failureSlider.addEventListener('input', (e) => {
+            document.getElementById('label-chaos-failure').innerText = `${e.target.value}%`;
+            applyChaosConfig();
+        });
+
+        latencySlider.addEventListener('input', (e) => {
+            document.getElementById('label-chaos-latency').innerText = `${e.target.value} ms`;
+            applyChaosConfig();
+        });
+
+        async function applyChaosConfig() {
+            const fail = parseInt(failureSlider.value);
+            const latency = parseInt(latencySlider.value);
+            const enabled = fail > 0 || latency > 0;
+
+            try {
+                const res = await fetch(`${API_CHAOS_CONFIG}?enabled=${enabled}&failureRate=${fail}&latencyMs=${latency}&jitterMs=200`, {
+                    method: 'POST'
+                }).then(r => r.json());
+                appendLog(`[CHAOS MONKEY CONFIG] FailureRate: ${fail}%, Latency: ${latency}ms (Enabled: ${enabled})`, 'log-warn');
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function setQuickChaos(failure, latency) {
+            failureSlider.value = failure;
+            latencySlider.value = latency;
+            document.getElementById('label-chaos-failure').innerText = `${failure}%`;
+            document.getElementById('label-chaos-latency').innerText = `${latency} ms`;
+            await applyChaosConfig();
+        }
+
+        async function injectPartition(active) {
+            try {
+                await fetch(`${API_CHAOS_PARTITION}?active=${active}`, { method: 'POST' });
+                appendLog(`[CHAOS MONKEY] DOWNSTREAM PARTITION ${active ? 'ENGAGED (100% OUTAGE)' : 'DISENGAGED'}`, 'log-err');
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function resetChaos() {
+            failureSlider.value = 0;
+            latencySlider.value = 0;
+            document.getElementById('label-chaos-failure').innerText = `0%`;
+            document.getElementById('label-chaos-latency').innerText = `0 ms`;
+            try {
+                await fetch(API_CHAOS_RESET, { method: 'POST' });
+                appendLog(`[CHAOS MONKEY] Pristine network conditions restored. All synthetic sabotage cleared.`, 'log-ok');
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        // Stream Request Inspector
+        async function requestStreamChunk() {
+            const contentId = document.getElementById('stream-content-id').value;
+            const clientId = document.getElementById('stream-client-id').value;
+            const fail = document.getElementById('stream-force-fail').checked;
+
+            const url = `${API_STREAM}?contentId=${encodeURIComponent(contentId)}&clientId=${encodeURIComponent(clientId)}&fail=${fail}`;
+            try {
+                const start = performance.now();
+                const res = await fetch(url);
+                const duration = Math.round(performance.now() - start);
+                const degradedHeader = res.headers.get('X-Cache-Degraded');
+                const data = await res.json();
+
+                const preview = document.getElementById('stream-response-json');
+                preview.innerHTML = `// HTTP Status: ${res.status} | Response Time: ${duration}ms | Cache Header: ${degradedHeader || 'None'}\n` +
+                    JSON.stringify(data, null, 2);
+
+                const statusType = data.status === 'OK' ? 'log-ok' : (data.status === 'STALE_FALLBACK' ? 'log-warn' : 'log-err');
+                appendLog(`[PLAYBACK] Content: "${data.contentId}" | Status: ${data.status} | Quality: ${data.quality} | Circuit: ${data.circuitState}`, statusType);
+            } catch (err) {
+                appendLog(`[PLAYBACK ERROR] ${err.message}`, 'log-err');
+            }
+        }
+
+        // Stress Test Runner
+        async function runStressTest() {
+            const total = document.getElementById('stress-total').value;
+            const concurrency = document.getElementById('stress-concurrency').value;
+            const fail = document.getElementById('stress-fail-rate').value;
+            const btn = document.getElementById('btn-run-stress');
+
+            btn.disabled = true;
+            btn.innerText = "⏳ Dispatching...";
+            appendLog(`[LOAD DISPATCHER] Firing ${total} concurrent requests (concurrency: ${concurrency}, fail rate: ${fail}%)...`, 'log-info');
+
+            try {
+                const res = await fetch(`${API_STRESS}?totalRequests=${total}&concurrency=${concurrency}&failPercentage=${fail}`, {
+                    method: 'POST'
+                }).then(r => r.json());
+
+                const resultsBox = document.getElementById('stress-results-box');
+                resultsBox.style.display = 'block';
+                document.getElementById('stress-duration').innerText = `${res.totalExecutionTimeMs}ms execution`;
+
+                document.getElementById('stress-metrics-pills').innerHTML = `
+                    <span style="background: rgba(34, 197, 94, 0.2); color: var(--status-closed); padding: 2px 6px; border-radius: 4px;">OK: ${res.successfulResponses}</span>
+                    <span style="background: rgba(245, 158, 11, 0.2); color: var(--status-half-open); padding: 2px 6px; border-radius: 4px;">STALE CACHED: ${res.staleFallbackResponses || 0}</span>
+                    <span style="background: rgba(239, 68, 68, 0.2); color: var(--status-open); padding: 2px 6px; border-radius: 4px;">FALLBACKS: ${res.circuitBreakerFallbacks}</span>
+                    <span style="background: rgba(59, 130, 246, 0.2); color: var(--accent-blue); padding: 2px 6px; border-radius: 4px;">THROTTLED: ${res.rateLimitedThrottled}</span>
+                    <span style="background: rgba(139, 92, 246, 0.2); color: var(--accent-purple); padding: 2px 6px; border-radius: 4px;">BULKHEAD FULL: ${res.bulkheadSaturated}</span>
+                `;
+
+                appendLog(`[LOAD DISPATCHER COMPLETED] Total: ${res.totalRequestsDispatched} | OK: ${res.successfulResponses} | Fallbacks: ${res.circuitBreakerFallbacks} | Final Circuit: ${res.finalCircuitState}`, 'log-info');
+            } catch (err) {
+                appendLog(`[LOAD DISPATCHER ERROR] ${err.message}`, 'log-err');
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "🚀 Dispatch Concurrent Load";
+            }
+        }
+
+        function appendLog(msg, typeClass = 'log-info') {
+            const consoleScreen = document.getElementById('console-screen');
+            const line = document.createElement('div');
+            line.className = 'log-line';
+            const time = new Date().toLocaleTimeString();
+            line.innerHTML = `<span class="log-time">[${time}]</span> <span class="${typeClass}">${escapeHtml(msg)}</span>`;
+            consoleScreen.appendChild(line);
+            consoleScreen.scrollTop = consoleScreen.scrollHeight;
+        }
+
+        function clearConsole() {
+            document.getElementById('console-screen').innerHTML = '';
+        }
+
+        function escapeHtml(text) {
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        // Start Telemetry Interval
+        pollTelemetry();
+        setInterval(pollTelemetry, 1000);
+    </script>
+</body>
+</html>
