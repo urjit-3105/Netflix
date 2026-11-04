@@ -4,10 +4,16 @@ import com.netflix.resilience.client.DownstreamStreamingClient;
 import com.netflix.resilience.config.ResilienceConfig;
 import com.netflix.resilience.model.StreamResponse;
 import com.netflix.resilience.service.StreamingService;
+import io.github.resilience4j.bulkhead.Bulkhead;
+import io.github.resilience4j.bulkhead.BulkheadConfig;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.ratelimiter.RateLimiterConfig;
 import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
+import io.github.resilience4j.retry.RetryRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,10 +39,12 @@ class RateLimiterSurgeProtectionTest {
 
         RateLimiterRegistry rateLimiterRegistry = RateLimiterRegistry.of(rlConfig);
         CircuitBreaker circuitBreaker = CircuitBreakerRegistry.ofDefaults().circuitBreaker("rateLimitTestCb");
+        Bulkhead bulkhead = BulkheadRegistry.of(BulkheadConfig.ofDefaults()).bulkhead("rateLimitTestBh");
+        Retry retry = RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()).retry("rateLimitTestRetry");
         ResilienceConfig resilienceConfig = new ResilienceConfig();
         this.downstreamClient = new TestStubDownstreamClient();
 
-        this.streamingService = new StreamingService(downstreamClient, circuitBreaker, rateLimiterRegistry, resilienceConfig);
+        this.streamingService = new StreamingService(downstreamClient, circuitBreaker, rateLimiterRegistry, bulkhead, retry, resilienceConfig);
     }
 
     @Test

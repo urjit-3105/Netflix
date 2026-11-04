@@ -8,17 +8,26 @@ public class HealthStatusResponse {
     private String overallHealth;
     private Map<String, Object> circuitBreaker;
     private Map<String, Object> rateLimiter;
+    private Map<String, Object> bulkhead;
+    private Map<String, Object> retry;
     private List<String> recentResilienceEvents;
     private long timestamp;
 
     public HealthStatusResponse() {}
 
-    public HealthStatusResponse(String serviceName, String overallHealth, Map<String, Object> circuitBreaker,
-                                Map<String, Object> rateLimiter, List<String> recentResilienceEvents, long timestamp) {
+    public HealthStatusResponse(String serviceName, String overallHealth,
+                                Map<String, Object> circuitBreaker,
+                                Map<String, Object> rateLimiter,
+                                Map<String, Object> bulkhead,
+                                Map<String, Object> retry,
+                                List<String> recentResilienceEvents,
+                                long timestamp) {
         this.serviceName = serviceName;
         this.overallHealth = overallHealth;
         this.circuitBreaker = circuitBreaker;
         this.rateLimiter = rateLimiter;
+        this.bulkhead = bulkhead;
+        this.retry = retry;
         this.recentResilienceEvents = recentResilienceEvents;
         this.timestamp = timestamp;
     }
@@ -32,6 +41,8 @@ public class HealthStatusResponse {
         private String overallHealth;
         private Map<String, Object> circuitBreaker;
         private Map<String, Object> rateLimiter;
+        private Map<String, Object> bulkhead;
+        private Map<String, Object> retry;
         private List<String> recentResilienceEvents;
         private long timestamp;
 
@@ -39,11 +50,13 @@ public class HealthStatusResponse {
         public Builder overallHealth(String overallHealth) { this.overallHealth = overallHealth; return this; }
         public Builder circuitBreaker(Map<String, Object> circuitBreaker) { this.circuitBreaker = circuitBreaker; return this; }
         public Builder rateLimiter(Map<String, Object> rateLimiter) { this.rateLimiter = rateLimiter; return this; }
+        public Builder bulkhead(Map<String, Object> bulkhead) { this.bulkhead = bulkhead; return this; }
+        public Builder retry(Map<String, Object> retry) { this.retry = retry; return this; }
         public Builder recentResilienceEvents(List<String> recentResilienceEvents) { this.recentResilienceEvents = recentResilienceEvents; return this; }
         public Builder timestamp(long timestamp) { this.timestamp = timestamp; return this; }
 
         public HealthStatusResponse build() {
-            return new HealthStatusResponse(serviceName, overallHealth, circuitBreaker, rateLimiter, recentResilienceEvents, timestamp);
+            return new HealthStatusResponse(serviceName, overallHealth, circuitBreaker, rateLimiter, bulkhead, retry, recentResilienceEvents, timestamp);
         }
     }
 
@@ -55,6 +68,10 @@ public class HealthStatusResponse {
     public void setCircuitBreaker(Map<String, Object> circuitBreaker) { this.circuitBreaker = circuitBreaker; }
     public Map<String, Object> getRateLimiter() { return rateLimiter; }
     public void setRateLimiter(Map<String, Object> rateLimiter) { this.rateLimiter = rateLimiter; }
+    public Map<String, Object> getBulkhead() { return bulkhead; }
+    public void setBulkhead(Map<String, Object> bulkhead) { this.bulkhead = bulkhead; }
+    public Map<String, Object> getRetry() { return retry; }
+    public void setRetry(Map<String, Object> retry) { this.retry = retry; }
     public List<String> getRecentResilienceEvents() { return recentResilienceEvents; }
     public void setRecentResilienceEvents(List<String> recentResilienceEvents) { this.recentResilienceEvents = recentResilienceEvents; }
     public long getTimestamp() { return timestamp; }

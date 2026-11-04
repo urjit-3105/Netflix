@@ -20,7 +20,7 @@ management:
     ratelimiters:
       enabled: true
 
-# Resilience4j Core Configuration
+# Resilience4j Core Configuration: CircuitBreaker, RateLimiter, Bulkhead & Retry
 resilience4j:
   circuitbreaker:
     configs:
@@ -42,6 +42,7 @@ resilience4j:
     instances:
       streamingServiceCircuitBreaker:
         baseConfig: default
+
   ratelimiter:
     configs:
       default:
@@ -52,4 +53,32 @@ resilience4j:
         eventConsumerBufferSize: 100
     instances:
       clientRateLimiter:
+        baseConfig: default
+
+  bulkhead:
+    configs:
+      default:
+        registerHealthIndicator: true
+        maxConcurrentCalls: 10
+        maxWaitDuration: 10ms
+        eventConsumerBufferSize: 100
+    instances:
+      streamingBulkhead:
+        baseConfig: default
+
+  retry:
+    configs:
+      default:
+        registerHealthIndicator: true
+        maxAttempts: 3
+        waitDuration: 100ms
+        enableExponentialBackoff: true
+        exponentialBackoffMultiplier: 2
+        enableRandomizedWait: true
+        randomizedWaitFactor: 0.5
+        retryExceptions:
+          - com.netflix.resilience.exception.DownstreamServiceException
+        eventConsumerBufferSize: 100
+    instances:
+      streamingRetry:
         baseConfig: default

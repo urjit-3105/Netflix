@@ -3,12 +3,14 @@ package com.netflix.resilience.service;
 import com.netflix.resilience.client.DownstreamStreamingClient;
 import com.netflix.resilience.config.ResilienceConfig;
 import com.netflix.resilience.model.StreamResponse;
+import io.github.resilience4j.bulkhead.Bulkhead;
+import io.github.resilience4j.bulkhead.BulkheadFullException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
 import io.github.resilience4j.ratelimiter.RequestNotPermitted;
+import io.github.resilience4j.retry.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -23,27 +25,34 @@ public class StreamingService {
     private final DownstreamStreamingClient downstreamClient;
     private final CircuitBreaker circuitBreaker;
     private final RateLimiterRegistry rateLimiterRegistry;
+    private final Bulkhead bulkhead;
+    private final Retry retry;
     private final ResilienceConfig resilienceConfig;
 
     public StreamingService(DownstreamStreamingClient downstreamClient,
                             CircuitBreaker streamingServiceCircuitBreaker,
                             RateLimiterRegistry rateLimiterRegistry,
+                            Bulkhead streamingBulkhead,
+                            Retry streamingRetry,
                             ResilienceConfig resilienceConfig) {
         this.downstreamClient = downstreamClient;
         this.circuitBreaker = streamingServiceCircuitBreaker;
         this.rateLimiterRegistry = rateLimiterRegistry;
+        this.bulkhead = streamingBulkhead;
+        this.retry = streamingRetry;
         this.resilienceConfig = resilienceConfig;
     }
 
     /**
-     * Executes streaming content retrieval protected by Circuit Breaker and Client-Level Sliding-Window Rate Limiter.
+     * Executes streaming content retrieval protected by the full Resilience4j stack:
+     * RateLimiter -> Bulkhead -> CircuitBreaker -> Retry -> Downstream Client
      *
      * @param contentId Content ID (e.g. movie/series identifier)
      * @param clientId Client / Subscriber identifier for rate-limiting
      * @param simulateError Flag to force remote failure
      * @param simulatedLatencyMs Simulated remote latency in milliseconds
      * @param randomFailureRate Percentage chance (0-100) of simulated random remote failure
-     * @return StreamResponse with playback manifest, bitrate, quality, and circuit status
+     * @return StreamResponse with playback manifest, bitrate, quality, and resilience status
      */
     public StreamResponse streamContent(String contentId,
                                         String clientId,
@@ -51,33 +60,43 @@ public class StreamingService {
                                         long simulatedLatencyMs,
                                         int randomFailureRate) {
 
-        // Acquire rate limiter dedicated for this client ID (or fallback to default)
         String rateLimiterKey = (clientId != null && !clientId.isBlank())
                 ? "rateLimiter-" + clientId.trim()
                 : ResilienceConfig.DEFAULT_RATE_LIMITER_NAME;
 
         RateLimiter clientLimiter = rateLimiterRegistry.rateLimiter(rateLimiterKey);
 
-        // Decorate supplier with Circuit Breaker and Rate Limiter
+        // Core downstream call supplier
         Supplier<StreamResponse> downstreamSupplier = () ->
                 downstreamClient.fetchStreamFromDownstream(contentId, clientId, simulateError, simulatedLatencyMs, randomFailureRate);
 
-        Supplier<StreamResponse> rateLimitedSupplier = RateLimiter.decorateSupplier(clientLimiter, downstreamSupplier);
-        Supplier<StreamResponse> protectedSupplier = CircuitBreaker.decorateSupplier(circuitBreaker, rateLimitedSupplier);
+        // Layered resilience decorators:
+        // 1. Retry: Retries transient exceptions up to 3 times with exponential backoff & jitter
+        Supplier<StreamResponse> retrySupplier = Retry.decorateSupplier(retry, downstreamSupplier);
+        // 2. Circuit Breaker: Tracks failure rates and fails-fast when threshold exceeded
+        Supplier<StreamResponse> circuitProtectedSupplier = CircuitBreaker.decorateSupplier(circuitBreaker, retrySupplier);
+        // 3. Bulkhead: Caps concurrent in-flight calls to isolate thread pools
+        Supplier<StreamResponse> bulkheadSupplier = Bulkhead.decorateSupplier(bulkhead, circuitProtectedSupplier);
+        // 4. Rate Limiter: Enforces per-client sliding window throughput
+        Supplier<StreamResponse> fullyProtectedSupplier = RateLimiter.decorateSupplier(clientLimiter, bulkheadSupplier);
 
         long startTime = System.currentTimeMillis();
         try {
-            StreamResponse response = protectedSupplier.get();
+            StreamResponse response = fullyProtectedSupplier.get();
             response.setCircuitState(circuitBreaker.getState().name());
             return response;
         } catch (RequestNotPermitted ex) {
             log.warn("[RATE LIMIT EXCEEDED] Client '{}' exceeded maximum allowed request throughput: {}", clientId, ex.getMessage());
             return fallbackRateLimit(contentId, clientId, ex, System.currentTimeMillis() - startTime);
+        } catch (BulkheadFullException ex) {
+            log.warn("[BULKHEAD SATURATED] Concurrency limit exceeded on bulkhead '{}' for content '{}': {}",
+                    bulkhead.getName(), contentId, ex.getMessage());
+            return fallbackBulkhead(contentId, clientId, ex, System.currentTimeMillis() - startTime);
         } catch (CallNotPermittedException ex) {
             log.warn("[CIRCUIT OPEN] Call rejected fast for content '{}'. Circuit state: {}", contentId, circuitBreaker.getState());
             return fallbackCircuitBreaker(contentId, clientId, ex, System.currentTimeMillis() - startTime, true);
         } catch (Exception ex) {
-            log.error("[DOWNSTREAM FAILURE] Failed to fetch stream for content '{}': {}", contentId, ex.getMessage());
+            log.error("[DOWNSTREAM FAILURE] Failed to fetch stream for content '{}' after retries: {}", contentId, ex.getMessage());
             return fallbackCircuitBreaker(contentId, clientId, ex, System.currentTimeMillis() - startTime, false);
         }
     }
@@ -93,7 +112,7 @@ public class StreamingService {
                                                  boolean circuitOpen) {
         String cause = circuitOpen
                 ? "Circuit Breaker OPEN (Fail-Fast Triggered)"
-                : "Downstream Outage / Timeout (" + ex.getClass().getSimpleName() + ")";
+                : "Downstream Outage (" + ex.getClass().getSimpleName() + " after retries)";
 
         return StreamResponse.builder()
                 .contentId(contentId)
@@ -130,8 +149,36 @@ public class StreamingService {
                 .build();
     }
 
+    /**
+     * Automated fallback for Bulkhead concurrency saturation.
+     */
+    public StreamResponse fallbackBulkhead(String contentId,
+                                           String clientId,
+                                           BulkheadFullException ex,
+                                           long durationMs) {
+        return StreamResponse.builder()
+                .contentId(contentId)
+                .clientId(clientId)
+                .title("Unknown / Bulkhead Saturated")
+                .quality("NONE")
+                .bitrate("0 Kbps")
+                .status("BULKHEAD_FULL")
+                .message("HTTP 503 Service Unavailable: Bulkhead concurrency capacity saturated for content '" + contentId + "'. System isolated against cascading load.")
+                .circuitState(circuitBreaker.getState().name())
+                .executionDurationMs(durationMs)
+                .timestamp(System.currentTimeMillis())
+                .build();
+    }
+
     public CircuitBreaker getCircuitBreaker() {
         return circuitBreaker;
     }
-}
 
+    public Bulkhead getBulkhead() {
+        return bulkhead;
+    }
+
+    public Retry getRetry() {
+        return retry;
+    }
+}

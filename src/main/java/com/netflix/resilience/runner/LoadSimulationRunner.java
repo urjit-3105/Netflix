@@ -12,9 +12,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Concurrency & Stress Test Runner.
+ * Concurrency & Stress Test Runner evaluating CircuitBreaker, RateLimiter, Bulkhead, and Retry.
  * Can be activated with Spring profile: -Dspring.profiles.active=loadtest
- * or triggered programmatically to evaluate resilience mechanics under load.
  */
 @Component
 @Profile("loadtest")
@@ -43,12 +42,12 @@ public class LoadSimulationRunner implements CommandLineRunner {
         AtomicInteger okCount = new AtomicInteger();
         AtomicInteger fallbackCount = new AtomicInteger();
         AtomicInteger throttledCount = new AtomicInteger();
+        AtomicInteger bulkheadCount = new AtomicInteger();
 
         long startTime = System.currentTimeMillis();
 
         for (int i = 1; i <= totalRequests; i++) {
             final int requestId = i;
-            // Inject 60% failure rate for odd requests to trip the circuit
             final boolean forceFailure = (requestId % 2 == 1);
 
             executor.submit(() -> {
@@ -69,6 +68,10 @@ public class LoadSimulationRunner implements CommandLineRunner {
                         case "THROTTLED" -> {
                             throttledCount.incrementAndGet();
                             log.warn("🟡 Req #{}: THROTTLED [Rate Limiter Engaged] | Circuit: {}", requestId, response.getCircuitState());
+                        }
+                        case "BULKHEAD_FULL" -> {
+                            bulkheadCount.incrementAndGet();
+                            log.warn("🟠 Req #{}: BULKHEAD_FULL [Concurrency Saturated] | Circuit: {}", requestId, response.getCircuitState());
                         }
                         case "FALLBACK" -> {
                             fallbackCount.incrementAndGet();
@@ -97,8 +100,8 @@ public class LoadSimulationRunner implements CommandLineRunner {
         log.info("Successful Responses    : {}", okCount.get());
         log.info("Circuit Fallbacks       : {}", fallbackCount.get());
         log.info("Rate Limited / Throttled: {}", throttledCount.get());
+        log.info("Bulkhead Saturated      : {}", bulkheadCount.get());
         log.info("Final Circuit State     : {}", streamingService.getCircuitBreaker().getState());
         log.info("======================================================================");
     }
 }
-

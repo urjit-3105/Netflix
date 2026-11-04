@@ -15,15 +15,21 @@
 
 ```mermaid
 flowchart TD
-    Client["Client / Subscriber Devices"] -->|"HTTP GET /api/v1/content/stream"| IngressRateLimiter["Sliding-Window Rate Limiter\n(10 req/s per Client ID)"]
+    Client["Client / Subscriber Devices"] -->|"HTTP GET /api/v1/content/stream"| IngressRateLimiter["1. Sliding-Window Rate Limiter\n(10 req/s per Client ID)"]
 
     subgraph ResilienceBoundary ["Netflix Microservice Resilience Boundary"]
-        IngressRateLimiter -->|"Allowed"| CircuitBreakerCore["Resilience4j Circuit Breaker\n('streamingServiceCircuitBreaker')"]
+        IngressRateLimiter -->|"Allowed"| BulkheadCore["2. Bulkhead Concurrency Guard\n(Max 10 Concurrent Calls)"]
         IngressRateLimiter -.->|"Exceeded Quota"| ThrottledResponse["HTTP 429 Too Many Requests\n(Surge Protection Drop)"]
 
-        CircuitBreakerCore -->|"State: CLOSED"| RemoteClient["Downstream CDN Transcoder Service\n(Remote RPC / HTTP Client)"]
+        BulkheadCore -->|"Slot Available"| CircuitBreakerCore["3. Resilience4j Circuit Breaker\n('streamingServiceCircuitBreaker')"]
+        BulkheadCore -.->|"Capacity Saturated"| BulkheadSaturated["HTTP 503 Service Unavailable\n(Thread Pool Saturated)"]
+
+        CircuitBreakerCore -->|"State: CLOSED"| RetryEngine["4. Retry with Exp. Backoff\n(Max 3 Attempts + Jitter)"]
         CircuitBreakerCore -.->|"State: OPEN (Fail-Fast)"| FastFallback["Cached Edge Fallback Stream\n(720p HD Zero-Buffering)"]
-        RemoteClient -.->|"Timeout / 503 Exception"| DegradedFallback["Automated Fallback Trigger\n(Records Failure to Sliding Window)"]
+
+        RetryEngine -->|"Execution"| RemoteClient["Downstream CDN Transcoder Service\n(Remote RPC / HTTP Client)"]
+        RemoteClient -.->|"Transient Hiccup"| RetryEngine
+        RemoteClient -.->|"Exhausted Retries"| DegradedFallback["Automated Fallback Trigger\n(Records Failure to Sliding Window)"]
 
         CircuitBreakerCore -.->|"Telemetry Events"| EventBuffer["In-Memory Resilience Event Bus\n(Ring Buffer Telemetry)"]
     end
@@ -37,7 +43,7 @@ flowchart TD
 
 ---
 
-## ⚙️ Core Technical Capabilities
+## ⚙️ Core Technical Capabilities: The Resilience "Holy Trinity"
 
 ### 1. Resilient Circuit Breaker (Count-Based Sliding Window)
 - **Sliding Window**: Tracks the last 10 requests (`COUNT_BASED`).
@@ -46,20 +52,17 @@ flowchart TD
 - **Fail-Fast Open State**: While `OPEN`, remote calls are short-circuited instantly (0 ms latency), executing automated fallback routines without saturating the downstream service.
 - **Half-Open Recovery**: Automatically transitions to `HALF-OPEN` after **5,000 ms**, evaluating **3 trial requests** before fully recovering back to `CLOSED`.
 
-### 2. Client-Isolated Sliding-Window Rate Limiting
+### 2. Bulkhead Concurrency Isolation
+- **Resource Segregation**: Restricts in-flight streaming requests to **10 concurrent calls** (`streamingBulkhead`), isolating thread pools to prevent streaming traffic spikes from starving other services (catalog search, user auth).
+- **Graceful Saturation**: Instantly drops excess traffic with `BULKHEAD_FULL` fallback when saturated.
+
+### 3. Smart Retry with Exponential Backoff & Jitter
+- **Transient Healing**: Retries transient downstream exceptions up to **3 attempts** with a base backoff of **100 ms**, exponential multiplier of $2\times$, and randomized jitter ($0.5$).
+- **Anti-Stampede**: Jitter spreads out retried requests across time to prevent the "thundering herd" problem on recovering downstream nodes.
+
+### 4. Client-Isolated Sliding-Window Rate Limiting
 - **Client ID Isolation**: Capping requests per client ID (`rateLimiter-{clientId}`) with fallback to the global tenant limiter.
 - **Surge Protection**: Configured for **10 requests / second** with **0 ms wait duration**, shedding traffic bursts immediately with an informative `THROTTLED` response.
-
-### 3. Graceful Service Degradation (Netflix Playback Pattern)
-- Under upstream outages or network partitioning, users never experience black screens or crashes. The service automatically switches to an Edge Fallback Buffer (720p HD, 2.5 Mbps optimized bitrate).
-
-### 4. Telemetry & Actuator Observability
-- Live telemetry endpoint at `/api/v1/content/health-status` streaming:
-  - Exact state of the circuit breaker (`CLOSED`, `OPEN`, `HALF_OPEN`).
-  - Failure rate percentage and slow call duration percentiles.
-  - Number of buffered, successful, failed, and short-circuited calls.
-  - Live ring buffer of recent resilience events (state transitions, slow calls, rate limit breaches).
-  - Native Prometheus scraping metrics exposed on `/actuator/prometheus`.
 
 ---
 
@@ -78,40 +81,6 @@ GET /api/v1/content/stream
 | `latency` | `long` | `0` | Injected downstream latency (ms) to simulate slow calls |
 | `randomFail`| `int` | `0` | Probabilistic failure injection (0 to 100%) |
 
-#### Sample Responses
-
-**Healthy 4K Stream (Circuit CLOSED):**
-```json
-{
-  "contentId": "stranger-things-s5",
-  "clientId": "subscriber-101",
-  "title": "Stranger Things Season 5 (Ultra HD Master)",
-  "quality": "4K UHD Dolby Vision",
-  "bitrate": "18.5 Mbps",
-  "status": "OK",
-  "message": "High-speed direct streaming active from primary CDN edge node",
-  "circuitState": "CLOSED",
-  "executionDurationMs": 12,
-  "timestamp": 1793646500000
-}
-```
-
-**Graceful Degradation Fallback (Circuit OPEN or Remote Failure):**
-```json
-{
-  "contentId": "stranger-things-s5",
-  "clientId": "subscriber-101",
-  "title": "Stranger Things (Pre-Cached Edge Fallback)",
-  "quality": "720p HD (Edge Fallback Buffer)",
-  "bitrate": "2.5 Mbps (Optimized)",
-  "status": "FALLBACK",
-  "message": "Graceful Degradation Active: Downstream CDN unavailable [Circuit Breaker OPEN (Fail-Fast Triggered)]. Serving cached edge stream without disruption.",
-  "circuitState": "OPEN",
-  "executionDurationMs": 2,
-  "timestamp": 1793646500050
-}
-```
-
 ---
 
 ### 2. Live Health Status & Telemetry
@@ -122,7 +91,7 @@ GET /api/v1/content/health-status?clientId={clientId}
 ```json
 {
   "serviceName": "netflix-resilience-microservice",
-  "overallHealth": "HEALTHY (Streaming Service UP)",
+  "overallHealth": "HEALTHY (Streaming Service UP - Holy Trinity Active)",
   "circuitBreaker": {
     "name": "streamingServiceCircuitBreaker",
     "state": "CLOSED",
@@ -143,77 +112,53 @@ GET /api/v1/content/health-status?clientId={clientId}
     "limitForPeriod": 10,
     "limitRefreshPeriodMs": 1000
   },
+  "bulkhead": {
+    "name": "streamingBulkhead",
+    "availableConcurrentCalls": 10,
+    "maxConcurrentCalls": 10
+  },
+  "retry": {
+    "name": "streamingRetry",
+    "maxAttempts": 3,
+    "successfulCallsWithoutRetry": 10,
+    "successfulCallsWithRetry": 0,
+    "failedCallsWithoutRetry": 0,
+    "failedCallsWithRetry": 0
+  },
   "recentResilienceEvents": [
-    "[2026-11-03T00:15:20.100Z] Circuit Breaker State Transition: HALF_OPEN -> CLOSED",
-    "[2026-11-03T00:15:15.050Z] Circuit Breaker State Transition: OPEN -> HALF_OPEN"
+    "[2026-11-04T23:30:20.100Z] Circuit Breaker Transition: HALF_OPEN -> CLOSED",
+    "[2026-11-04T23:30:15.050Z] Retry Attempt #1 for 'streamingRetry' (Waiting 100ms)"
   ],
-  "timestamp": 1793646510000
+  "timestamp": 1793818220000
 }
 ```
 
 ---
 
-### 3. Concurrent Load & Chaos Simulation Endpoint
-```http
-POST /api/v1/content/simulate-load?totalRequests=30&concurrency=10&failPercentage=60&clientId=load-test-client
-```
+## 🧪 Comprehensive Testing Suite
 
-Dispatches high-concurrency requests across an `ExecutorService` thread pool to verify sliding-window rate-limiting and circuit breaker trip mechanics under load.
-
----
-
-## 🧪 Comprehensive Testing Architecture
-
-The microservice includes automated JUnit 5 & Mockito test suites:
-
-1. **`CircuitBreakerStateTransitionTest`**:
-   - Validates steady-state throughput in `CLOSED` state.
-   - Evaluates sliding window failure threshold breach triggering `CLOSED -> OPEN`.
-   - Asserts that all subsequent calls fail fast without touching downstream infrastructure.
-   - Verifies automated transition from `OPEN -> HALF_OPEN` after timeout.
-   - Confirms trial call evaluation and healing back to `CLOSED`.
-2. **`RateLimiterSurgeProtectionTest`**:
-   - Asserts strict token permission replenishment per sliding window.
-   - Verifies immediate `HTTP 429 / THROTTLED` shedding on traffic bursts.
-   - Confirms multi-tenant client isolation (one abusive subscriber does not degrade another).
-3. **`ResilienceControllerIntegrationTest`**:
-   - Full Spring Boot MockMvc integration testing of all HTTP routes, actuator endpoints, and error paths.
-
-### Executing Tests
 ```bash
 mvn test
 ```
 
-Expected result:
-```text
-[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
-[INFO] BUILD SUCCESS
-```
+Test suites included:
+1. **`CircuitBreakerStateTransitionTest`**: Evaluates `CLOSED -> OPEN -> HALF_OPEN -> CLOSED` state machine transitions.
+2. **`RateLimiterSurgeProtectionTest`**: Verifies burst protection and client-level quota isolation.
+3. **`BulkheadAndRetryResilienceTest`**: Tests transient error retry recovery, retry exhaustion, and bulkhead concurrent capacity saturation.
+4. **`ResilienceControllerIntegrationTest`**: Full Spring Boot MockMvc integration testing of all HTTP routes, actuator endpoints, and error paths.
 
 ---
 
 ## 🚀 Running Stress Tests
 
-### Option A: Using the PowerShell Script
 ```powershell
 ./scripts/stress-test.ps1 -TotalRequests 30 -Concurrency 10 -FailPercentage 60 -ClientId "terminal-test"
-```
-
-### Option B: Running via Standalone Java Runner
-```bash
-mvn spring-boot:run -Dspring-boot.run.arguments="--spring.profiles.active=loadtest"
 ```
 
 ---
 
 ## 🐳 Containerization & Docker Deployment
 
-### Multi-Stage Docker Build
-```bash
-docker build -t netflix-resilience-service:latest .
-```
-
-### Run Distributed Stack (App + Prometheus)
 ```bash
 docker compose up -d
 ```

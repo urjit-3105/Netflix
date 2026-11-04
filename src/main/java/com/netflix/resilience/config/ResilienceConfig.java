@@ -1,11 +1,18 @@
 package com.netflix.resilience.config;
 
+import com.netflix.resilience.exception.DownstreamServiceException;
+import io.github.resilience4j.bulkhead.Bulkhead;
+import io.github.resilience4j.bulkhead.BulkheadConfig;
+import io.github.resilience4j.bulkhead.BulkheadRegistry;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RateLimiterConfig;
 import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
+import io.github.resilience4j.retry.RetryRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -23,8 +30,10 @@ public class ResilienceConfig {
     private static final Logger log = LoggerFactory.getLogger(ResilienceConfig.class);
     public static final String CIRCUIT_BREAKER_NAME = "streamingServiceCircuitBreaker";
     public static final String DEFAULT_RATE_LIMITER_NAME = "clientRateLimiter";
+    public static final String BULKHEAD_NAME = "streamingBulkhead";
+    public static final String RETRY_NAME = "streamingRetry";
 
-    // In-memory buffer to track the last 50 circuit breaker & rate limiter events for real-time observability
+    // In-memory buffer to track the last 50 resilience events for real-time observability
     private final ConcurrentLinkedDeque<String> resilienceEventHistory = new ConcurrentLinkedDeque<>();
     private static final int MAX_EVENT_HISTORY = 50;
 
@@ -49,29 +58,22 @@ public class ResilienceConfig {
         CircuitBreakerRegistry registry = CircuitBreakerRegistry.of(circuitBreakerConfig);
         CircuitBreaker cb = registry.circuitBreaker(CIRCUIT_BREAKER_NAME);
 
-        // Attach event consumers to record transitions and telemetry
         cb.getEventPublisher()
                 .onStateTransition(event -> {
-                    String msg = String.format("[%s] Circuit Breaker State Transition: %s -> %s",
+                    String msg = String.format("[%s] Circuit Breaker Transition: %s -> %s",
                             Instant.now(), event.getStateTransition().getFromState(), event.getStateTransition().getToState());
                     log.warn(msg);
                     recordEvent(msg);
                 })
                 .onError(event -> {
-                    String msg = String.format("[%s] Circuit Breaker Recorded Error: duration=%dms, error=%s",
-                            Instant.now(), event.getElapsedDuration().toMillis(), event.getThrowable().getMessage());
+                    String msg = String.format("[%s] Circuit Breaker Error: %s",
+                            Instant.now(), event.getThrowable().getMessage());
                     log.debug(msg);
                     recordEvent(msg);
                 })
                 .onCallNotPermitted(event -> {
-                    String msg = String.format("[%s] Circuit Breaker Call Blocked (OPEN State): Request failed fast",
+                    String msg = String.format("[%s] Circuit Breaker Blocked: Call rejected fast (OPEN state)",
                             Instant.now());
-                    log.warn(msg);
-                    recordEvent(msg);
-                })
-                .onSlowCallRateExceeded(event -> {
-                    String msg = String.format("[%s] Circuit Breaker Slow Call Rate Exceeded: %.2f%%",
-                            Instant.now(), event.getSlowCallRate());
                     log.warn(msg);
                     recordEvent(msg);
                 });
@@ -87,9 +89,9 @@ public class ResilienceConfig {
     @Bean
     public RateLimiterConfig defaultRateLimiterConfig() {
         return RateLimiterConfig.custom()
-                .limitForPeriod(10) // 10 requests allowed
-                .limitRefreshPeriod(Duration.ofSeconds(1)) // per second sliding window
-                .timeoutDuration(Duration.ofMillis(0)) // fail-fast with RequestNotPermittedException
+                .limitForPeriod(10)
+                .limitRefreshPeriod(Duration.ofSeconds(1))
+                .timeoutDuration(Duration.ofMillis(0))
                 .build();
     }
 
@@ -99,7 +101,7 @@ public class ResilienceConfig {
         RateLimiter rl = registry.rateLimiter(DEFAULT_RATE_LIMITER_NAME);
 
         rl.getEventPublisher().onFailure(event -> {
-            String msg = String.format("[%s] Rate Limiter Rejected Call: Client exceeded limit of 10 req/s",
+            String msg = String.format("[%s] Rate Limiter Throttled: Client burst exceeded throughput quota",
                     Instant.now());
             log.warn(msg);
             recordEvent(msg);
@@ -113,6 +115,70 @@ public class ResilienceConfig {
         return rateLimiterRegistry.rateLimiter(DEFAULT_RATE_LIMITER_NAME);
     }
 
+    @Bean
+    public BulkheadConfig defaultBulkheadConfig() {
+        return BulkheadConfig.custom()
+                .maxConcurrentCalls(10)
+                .maxWaitDuration(Duration.ofMillis(10))
+                .build();
+    }
+
+    @Bean
+    public BulkheadRegistry bulkheadRegistry(BulkheadConfig bulkheadConfig) {
+        BulkheadRegistry registry = BulkheadRegistry.of(bulkheadConfig);
+        Bulkhead bh = registry.bulkhead(BULKHEAD_NAME);
+
+        bh.getEventPublisher().onCallRejected(event -> {
+            String msg = String.format("[%s] Bulkhead Saturated: Concurrent call rejected (Capacity=%d)",
+                    Instant.now(), bh.getBulkheadConfig().getMaxConcurrentCalls());
+            log.warn(msg);
+            recordEvent(msg);
+        });
+
+        return registry;
+    }
+
+    @Bean
+    public Bulkhead streamingBulkhead(BulkheadRegistry bulkheadRegistry) {
+        return bulkheadRegistry.bulkhead(BULKHEAD_NAME);
+    }
+
+    @Bean
+    public RetryConfig defaultRetryConfig() {
+        return RetryConfig.custom()
+                .maxAttempts(3)
+                .waitDuration(Duration.ofMillis(100))
+                .retryExceptions(DownstreamServiceException.class)
+                .build();
+    }
+
+    @Bean
+    public RetryRegistry retryRegistry(RetryConfig retryConfig) {
+        RetryRegistry registry = RetryRegistry.of(retryConfig);
+        Retry retry = registry.retry(RETRY_NAME);
+
+        retry.getEventPublisher()
+                .onRetry(event -> {
+                    String msg = String.format("[%s] Retry Attempt #%d for '%s' (Waiting %dms)",
+                            Instant.now(), event.getNumberOfRetryAttempts(), event.getName(), event.getWaitInterval().toMillis());
+                    log.info(msg);
+                    recordEvent(msg);
+                })
+                .onError(event -> {
+                    String msg = String.format("[%s] Retry Exhausted: %d attempts failed: %s",
+                            Instant.now(), event.getNumberOfRetryAttempts(), event.getLastThrowable().getMessage());
+                    log.warn(msg);
+                    recordEvent(msg);
+                });
+
+        return registry;
+    }
+
+    @Bean
+    public Retry streamingRetry(RetryRegistry retryRegistry) {
+        return retryRegistry.retry(RETRY_NAME);
+    }
+
     public void recordEvent(String event) {
         resilienceEventHistory.addFirst(event);
         while (resilienceEventHistory.size() > MAX_EVENT_HISTORY) {
@@ -124,4 +190,3 @@ public class ResilienceConfig {
         return resilienceEventHistory.stream().limit(25).collect(Collectors.toList());
     }
 }
-
